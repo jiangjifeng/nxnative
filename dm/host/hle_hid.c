@@ -95,6 +95,16 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
     if (s->ry < -STICK_THRESH) b |= 1u << 23;
     s->buttons = b;
     s->attributes = ATTR_CONNECTED | (id == NPAD_HANDHELD ? ATTR_WIRED | ATTR_LEFT_CONN | ATTR_LEFT_WIRED | ATTR_RIGHT_CONN | ATTR_RIGHT_WIRED : ATTR_LEFT_CONN | ATTR_RIGHT_CONN);
+    // Optional end-to-end Mac controller diagnosis: log what the game actually
+    // receives, separately from the front end's publish trace.
+    static int trace = -1, records;
+    static uint64_t previous_buttons = UINT64_MAX;
+    static int32_t previous_axes[4];
+    if (trace < 0) trace = getenv("DM_MAC_PAD_LOG") != NULL;
+    if (trace && records < 256 && (b != previous_buttons || s->lx != previous_axes[0] || s->ly != previous_axes[1] || s->rx != previous_axes[2] || s->ry != previous_axes[3])) {
+        LOG("Mac HID read: id=%#x buttons=%#llx left=%d,%d right=%d,%d", id, (unsigned long long)b, s->lx, s->ly, s->rx, s->ry);
+        previous_buttons = b; previous_axes[0] = s->lx; previous_axes[1] = s->ly; previous_axes[2] = s->rx; previous_axes[3] = s->ry; records++;
+    }
 }
 // GetNpadStates(out, n, id): returns the number written, newest first. The host keeps no history: only 1 current state (callers handle the returned count)
 static int states(NpadState *out, int n, uint32_t id, uint32_t style) { if (n <= 0) return 0; fill(out, id, style); return 1; }

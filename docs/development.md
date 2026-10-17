@@ -10,7 +10,7 @@ The README covers packing and playing. This page is for working on nxnative itse
 | Host (`dm/host`) | Stands in for the Horizon kernel and the system services the games call: threads and synchronization, memory, file system with transactional saves, HID, audio, movies (VP9 through libvpx, Vorbis sound through stb_vorbis), software keyboard, focus and lifecycle |
 | Graphics (`dm/gfx`) | NVN on Metal. Shaders are extracted by `shader_split.py` from Nintendo's containers and from Unity's `Shader` objects, then translated offline. Mario: 16,266 of 16,268 shaders compile. Engage: 9,268 of 9,269 |
 | Audio | Games that carry the SDK's audio renderer (Mario) run it in-process; games that use AudioOut directly (Engage: Wwise) feed it straight. Output goes through Core Audio (default on iOS, `DM_AUDIO=1` on the Mac) |
-| Input | iOS: the touch gamepad and physical controllers. Mac: scripted input (`DM_KEYS=<seconds>:<button>,…`, with `DM_KBD=<text>` answering the system keyboard) or `DM_WINDOW=1` for a window with keyboard input |
+| Input | iOS: the touch gamepad and physical controllers. Mac: scripted input (`DM_KEYS=<seconds>:<button>,…`, with `DM_KBD=<text>` answering the system keyboard) or `DM_WINDOW=1` for a window with keyboard and GameController input, including both sticks |
 | iOS app | One unsigned IPA for iPhone and iPad. The rewritten code is embedded in the executable; the shader libraries, the RomFS and the game icon are inside the app |
 | Known gaps | Conditional render is always drawn; sparse virtual-pool mappings; `DrawElementsIndirect`. TBDR optimizations are off by default (they don't understand bindless textures yet). No amiibo. The bundled prewarm lists are empty. On the Mac, Mario's menu and dialogue text render blank (fine on the iPhone) |
 
@@ -98,6 +98,30 @@ Notes on these steps:
 - If Xcode's Locations setting puts products in a custom place, the script finds the app through the build log.
 - hactool cannot read every update (Mario 1.2.1's patch NCA gives "Invalid BKTR layout!"), which is why `nx_extract` uses LibHac.
 
+## Mac app bundles and input
+
+`DM_WINDOW=1` supports connected GameController devices and hot plugging. Named face buttons map directly to the game: A confirms, B cancels, and X/Y keep their labels. Switch Pro profiles already provide Nintendo's A/B/X/Y elements, so they must not be swapped a second time. Both sticks, stick clicks, triggers, shoulders, D-pad and menu buttons are passed through. Multiple connected controllers share player one; losing focus or disconnecting releases their input. `DM_MAC_PAD_LOG=1` records the published input and the Npad values received by the game, capped at 256 changes in each trace.
+
+The red close button, Command-W, Command-Q, the Quit menu and Dock Quit all use the host's graceful shutdown path. Mac UI checks run with `make -C dm/host/tests GAME=<id> run-mac` on a logged-in desktop.
+
+For the prepared game work directory from the manual procedure above, package the host, rewritten modules, game files and completed shader cache into an app. A local `build/macos_build.json`, when present, supplies the game and version defaults:
+
+```
+DM_GAME="$G" python3 dm/tools/package_macos.py "$W" /Applications/Game.app --package "$VER" --host dm/host/dmhost --name "Game" --language zh-Hans
+# Replacing an app keeps the previous bundle under the game's work directory.
+DM_GAME="$G" python3 dm/tools/package_macos.py "$W" /Applications/Game.app --replace
+```
+
+The bundle contains the RomFS, DLC, rewritten modules, shader libraries, profile and fonts. Finder starts the host executable directly; its startup configures the bundle paths in the same process so AppKit and GameController retain the app's foreground identity. Writable data goes to `~/Library/Application Support/nxnative/<title ID>/`: `save/`, `pso_user.tsv`, `temp/` and `run/log.txt`. Moving the app or replacing it preserves that data. Close the game before using `--replace`. When upgrading an older bundle that stored data next to the app, copy its existing data directory to this location before launching the new app.
+
+To compile with separate Python processes while keeping the existing translator and chain fingerprints, use the parallel wrapper. `--fresh` uses an empty cache and replaces the previous cache only after all shaders succeed:
+
+```
+DM_GAME="$G" python3 dm/gfx/tools/build_parallel.py "$W/shader/pkg" "$W/build/cache/metal_shader_cache" --jobs 12 --threads 2 --fresh
+```
+
+It finishes pixel shaders before paired vertex shaders. Afterward, regenerate `c1_full.tsv` and rebuild the host as in the manual procedure above. `IOSOUT`, when set, is inherited by the compiler workers.
+
 ## Prewarm lists
 
 Metal compiles each combination of shaders and pipeline settings for the GPU the first time it is used. Each takes tens of milliseconds, so a burst of them on entering a level is a visible freeze. The host records what it had to compile and rebuilds those pipelines on a background queue at the next launch:
@@ -128,6 +152,7 @@ Record on the game version you ship. At launch the log names each list it read a
 - **60 fps:** the Switch version runs at 30; one patch to its code switches it to the 60 fps timing the game already has, so nothing runs too fast.
 
 **The Legend of Zelda: Breath of the Wild (`01007EF00011E000`)**
+- **Mac 1.8.2:** v1048576 (SDK 20.5.6) also runs, with the original 30 fps interval. Its 19,592 shader keys, compute facts and vertex/pixel pairs match 1.9.0, while embedded source offsets differ. The profile's shader input remains 1.9.0, so the NSP script still needs that update when packing 1.8.2; a manual build can generate a local profile's tables directly from 1.8.2.
 - A patch to the game's frame-interval logic lifts its 30 fps limit to 60 without changing the game speed (it falls back to 30 by itself when a frame takes too long).
 - The game waits for each frame's GPU work before submitting the next, so the host hands its translated commands to the GPU in segments ([04](agents/04-graphics.md)).
 - **HUD prompt shadows and glows:** each prompt bar captures itself into a blurred mask the game keeps in the red channel of an R8 texture whose channel mapping says alpha = 1; the profile's `alpha_from_red` key makes every layout shader read alpha from red for such render targets, otherwise prompts sit on hard-edged dark boxes or cream cloud rectangles ([04](agents/04-graphics.md)).

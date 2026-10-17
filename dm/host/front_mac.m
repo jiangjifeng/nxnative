@@ -1,4 +1,4 @@
-// Mac front end: with DM_WINDOW=1 open a window (CAMetalLayer, for the graphics backend to present frames) + keyboard → dm_input; the guest runs on a large-stack thread instead and the main thread belongs to AppKit.
+// Mac front end: with DM_WINDOW=1 open a window (CAMetalLayer, for the graphics backend to present frames) + keyboard / physical gamepads; the guest runs on a large-stack thread instead and the main thread belongs to AppKit.
 // Without DM_WINDOW: the guest runs directly on the current thread, behaving the same as with no front end (windowless tests use this).
 // Key map (Nintendo layout): WASD left stick, arrow keys D-pad, J=A K=B U=X I=Y, Q=L E=R, Z=ZL C=ZR, F=press left stick G=press right stick, Return=+ Tab=−.
 #import <Cocoa/Cocoa.h>
@@ -6,6 +6,7 @@
 #import <Metal/Metal.h>
 #include "dm.h"
 #include "dm_input.h"
+#include "gamepad_mac.h"
 #include "dm_uiscreen.h"
 void mtl_set_ui_rect_fn(void (*fn)(double *y, double *h));
 static void ui_rect_frac(double *fy, double *fh) { int x, y, w, h, rw = 0, rh = 0; dm_ui_rect(&x, &y, &w, &h); if (dm_screen_real(&rw, &rh) && rh > 0) { *fy = (double)y / rh; *fh = (double)h / rh; } }   // Same as front_ios.m: vertical position and height of the UI rectangle (as fractions of the frame height)
@@ -17,6 +18,42 @@ __attribute__((constructor)) static void ui_shift_reg(void) { mtl_set_ui_rect_fn
 static CAMetalLayer *g_layer;
 static uint64_t g_btn;
 static int g_w, g_a, g_s, g_d;
+
+static void request_quit(const char *reason) {
+    static int quitting;
+    if (quitting) return;
+    quitting = 1;
+    // Keep AppKit and the window alive while the existing shutdown path drains
+    // the GPU. It also has a bounded fallback if a worker cannot stop.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ dm_host_shutdown(reason); });
+}
+
+@interface DmMacDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate>
+- (void)quit:(id)sender;
+@end
+@implementation DmMacDelegate
+- (void)quit:(id)sender { (void)sender; request_quit("Mac Quit menu"); }
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender {
+    (void)sender; request_quit("macOS Quit"); return NSTerminateLater;
+}
+- (BOOL)windowShouldClose:(NSWindow *)sender {
+    (void)sender; request_quit("Mac window close"); return NO;
+}
+@end
+
+static void install_menu(DmMacDelegate *delegate) {
+    NSString *name = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleDisplayName"] ?: @DM_GAME_NAME;
+    NSMenu *bar = [NSMenu new];
+    NSMenuItem *application = [NSMenuItem new]; [bar addItem:application];
+    NSMenu *app = [[NSMenu alloc] initWithTitle:name]; application.submenu = app;
+    NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:[@"Quit " stringByAppendingString:name] action:@selector(quit:) keyEquivalent:@"q"];
+    quit.target = delegate; [app addItem:quit];
+    NSMenuItem *window = [NSMenuItem new]; [bar addItem:window];
+    NSMenu *windows = [[NSMenu alloc] initWithTitle:@"Window"]; window.submenu = windows;
+    [windows addItemWithTitle:@"Close" action:@selector(performClose:) keyEquivalent:@"w"];
+    [windows addItemWithTitle:@"Minimize" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
+    NSApp.mainMenu = bar; NSApp.windowsMenu = windows;
+}
 
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
 // The original game's 16:9 constants, behavior unchanged; DM_GAME_RES=<width>x<height> (docked mode; handheld scaled by 720/900) is only for side-by-side comparison with iOS widescreen
@@ -40,13 +77,17 @@ static int key_bit(unsigned short code) {
     }
     return -1;
 }
-static void on_key(NSEvent *e, int down) {
+static BOOL on_key(NSEvent *e, int down) {
     unsigned short c = e.keyCode;
-    switch (c) { case 13: g_w = down; break; case 0: g_a = down; break; case 1: g_s = down; break; case 2: g_d = down; break; }
+    BOOL recognized = YES;
+    switch (c) { case 13: g_w = down; break; case 0: g_a = down; break; case 1: g_s = down; break; case 2: g_d = down; break; default: recognized = NO; break; }
     int b = key_bit(c);
-    if (b >= 0) g_btn = down ? (g_btn | 1ull << b) : (g_btn & ~(1ull << b));
-    push();
+    if (b >= 0) { g_btn = down ? (g_btn | 1ull << b) : (g_btn & ~(1ull << b)); recognized = YES; }
+    if (recognized) push();
+    return recognized;
 }
+
+static void release_keys(void) { g_btn = 0; g_w = g_a = g_s = g_d = 0; push(); }
 
 typedef struct { void (*fn)(void); } guest_arg;
 static void *guest_tramp(void *p) {
@@ -60,11 +101,15 @@ void front_run(void (*guest)(void)) {
     @autoreleasepool {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+        static DmMacDelegate *delegate;
+        delegate = [DmMacDelegate new]; NSApp.delegate = delegate;
+        install_menu(delegate);
         NSRect r = NSMakeRect(0, 0, 1280, 720);
         NSWindow *win = [[NSWindow alloc] initWithContentRect:r
                                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
                                                       backing:NSBackingStoreBuffered defer:NO];
         win.title = @DM_GAME_NAME;   // the game profile's name (game name label)
+        win.delegate = delegate;
         NSView *v = win.contentView;
         v.wantsLayer = YES;
         g_layer = [CAMetalLayer layer];
@@ -75,10 +120,11 @@ void front_run(void (*guest)(void)) {
         [win center];
         [win makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];
+        dm_mac_gamepad_start();
         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown | NSEventMaskKeyUp handler:^NSEvent *(NSEvent *e) {
             if (e.window != win) return e;   // Only swallow keys for the game window; other windows such as the software keyboard input box receive typing as usual
-            if (!e.isARepeat) on_key(e, e.type == NSEventTypeKeyDown);
-            return nil;   // Swallow it to avoid the system beep
+            if (e.modifierFlags & NSEventModifierFlagCommand) return e;   // AppKit handles Command-Q / W / M and other menu shortcuts
+            return on_key(e, e.type == NSEventTypeKeyDown) ? nil : e;
         }];
         // Mouse as a single-point touchscreen (for testing touch on the local machine, front.h dm_touch_set): left button down / drag = finger 0 at the normalized coordinates, release = lifted
         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown | NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp handler:^NSEvent *(NSEvent *e) {
@@ -89,12 +135,10 @@ void front_run(void (*guest)(void)) {
             dm_touch t = {0, (float)(p.x / sz.width), (float)(1.0 - p.y / sz.height)};   // The AppKit view origin is at bottom left, the touchscreen origin is at top left
             dm_touch_set(&t, 1); return nil;
         }];
-        [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillCloseNotification object:win queue:nil
-                                                      usingBlock:^(NSNotification *n) { (void)n; exit(0); }];
         // Lifecycle (hle.h / dm.h): focus lost → 2, focus regained → 1; minimized → 3 + audio paused + GPU suspended, restored → resume (followed by focus regained → 1)
         NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
-        [nc addObserverForName:NSWindowDidResignKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; if (!win.miniaturized) dm_focus_set(2); }];
-        [nc addObserverForName:NSWindowDidBecomeKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_focus_set(1); }];
+        [nc addObserverForName:NSWindowDidResignKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; release_keys(); dm_mac_gamepad_active(0); if (!win.miniaturized) dm_focus_set(2); }];
+        [nc addObserverForName:NSWindowDidBecomeKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_mac_gamepad_active(1); dm_focus_set(1); }];
         [nc addObserverForName:NSWindowDidMiniaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_focus_set(3); dm_audio_suspend(1); dm_gfx_suspend(1); }];
         [nc addObserverForName:NSWindowDidDeminiaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_gfx_suspend(0); dm_audio_suspend(0); dm_focus_set(2); }];
         // Guest thread: 64 MiB stack (the Switch main thread stack is specified by npdm; the host gives plenty)

@@ -25,8 +25,10 @@ pad_layout	full
 alpha_from_red	d898eb245efdd495 e6a88e12dbae9743 be1d4af059205375 3a0122d004ea74ca 57984f1f48115868 f29dde3d00fb2972 cc37329bf8b7d773 87d900168952ea49 aa209f57b133e862 af07227eeb90304b adcbe3846d1d1ed7 43593beb906b7c6f 11bb9006c60d49d6 e7004fcb0aa6ce8c 896bfbc0413048c9 e1d0faffe4d027a2 8064cd6f18b1b5ed 71c2b3751a9e65f7 3dfe1aa3d996e91e e8ec1269c0f3f2db 302afdb62561cc5c 31e27998ede8f19f 0d532fb24cf738e5 6599d9842b242912 9a09e7e1e7c4cf84 5c490d6406951546
 
 # ---- 版本 | Versions ----
-# 只解了合并 1.9.0 的那份；基础版单独的构建号用到时再补 | only the merged 1.9.0 copy is extracted; the base game's own build IDs are added when needed
+# Known update builds; the base game's own build IDs are added when needed.
 build	v1114112	1.9.0	main=cd57b23fa4bbad65803d9788c01821ee	subsdk0=f39f4c431234c72eb520cfdd1001bbcf	sdk=574284b40c06cf1821a44857939083be
+# 1.8.2 (SDK 20.5.6), verified on Mac with the original 30 fps interval.
+build	v1048576	1.8.2	main=de0b6ac4efc1dda7f80f6d7598ec7a7d	subsdk0=3308c1d216f788397d1451c8345a16cd	sdk=5cf080e800530a7f25bd528ec875c27b
 package	v1114112
 shader_versions	v1114112
 
