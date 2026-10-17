@@ -154,6 +154,23 @@ CUTS = {
     (0x1126748, '1f0d0071', '1f090071', '升档时记的降档目标：cmp w8,#3 → cmp w8,#2', '仅宿主'),
     (0x1126794, '3f0d0071', '3f090071', '降档到 < 3 停 → 到 < 2 停：cmp w9,#3 → cmp w9,#2', '仅宿主'),
   ],
+  # Breath of the Wild 1.8.2 (v1048576): the same dynamic-interval floor.
+  # Verified in the original main: GameFrameworkNx's loop at 0x101287c loads
+  # s10 = 1, s11 = 2, computes the candidate interval, and submits it through
+  # vtable +0x130. All five sites retain the 1.9.0 loop's relative offsets;
+  # the adjacent fmov s0,s11 / cmp w27,#2 signature is unique in this text.
+  # VFR::init at 0x1409130 receives base interval 2 from 0x116a940;
+  # updateInterval at 0x1409230 receives the framework's vtable +0x138 result
+  # from 0xbe6834 / 0x116d244 and computes current/base at 0x14092b4..d4.
+  # Thus interval 1 uses the game's 60 fps time step. The adaptive fallback
+  # to intervals 2 and 3 remains available.
+  'de0b6ac4efc1dda7f80f6d7598ec7a7d': [
+    (0x101297c, '6041201e', '4041201e', 'Dynamic interval candidate floor: fmov s0,s11 (2) -> fmov s0,s10 (1)', '仅宿主'),
+    (0x1012980, '7f0b0071', '7f070071', 'Dynamic interval candidate floor: cmp w27,#2 -> cmp w27,#1', '仅宿主'),
+    (0x10128cc, '78008052', '58008052', 'Recovery target max(candidate,w24)-1: mov w24,#3 -> mov w24,#2', '仅宿主'),
+    (0x10129b8, '1f0d0071', '1f090071', 'Recovery target comparison: cmp w8,#3 -> cmp w8,#2', '仅宿主'),
+    (0x1012a04, '3f0d0071', '3f090071', 'Stop stepping down below interval 2 instead of 3: cmp w9,#3 -> cmp w9,#2', '仅宿主'),
+  ],
   '56ec24747ec9e7f19b3efb062483a19d': [
     (0x346430, '08fca752', '087ca052', 'AddressRegionManager 构造：节点区上限 mov w8,#0x3fe00000 → mov w8,#0x3e00000', '仅宿主'),
     (0x3464cc, '09fca752', '097ca052', 'AddressRegionManager 构造：节点区登记为已占区域的长度 mov w9,#0x3fe00000 → mov w9,#0x3e00000', '仅宿主'),
