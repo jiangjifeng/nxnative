@@ -104,6 +104,10 @@ Notes on these steps:
 
 The red close button, Command-W, Command-Q, the Quit menu and Dock Quit all use the host's graceful shutdown path. Mac UI checks run with `make -C dm/host/tests GAME=<id> run-mac` on a logged-in desktop.
 
+The Mac and iOS windows show FPS and average frame time at the top left by default (`DM_SHOW_FPS=0` hides it). The counter uses actual drawable presentation times over a rolling second, including the wait since the last frame, and updates twice a second. Its frame time is `1000 / FPS`; it measures displayed throughput, while the existing `[nvn] 计时` and `[长帧]` log lines separate frame intervals, submit work, GPU time, pipeline compilation and texture uploads. For per-frame analysis, use `DM_NVN_TSV=timings.tsv DM_NVN_TSV_CALLS=0`; on iOS put these settings in `Documents/env.txt` and restart, then retrieve the TSV and `log.txt` from Files.
+
+`@wait_ms` measures the actual time spent pacing inside texture acquisition; `@wait_req_ms` is the requested wait on the host's pacing clock, and `@pq_wait_ms` is the separate wait for a swapchain texture's previous presentation. Long-frame lines also include both actual waits and the presenting thread's CPU time (CPU time is available with `DM_SLOWFRAME=1` or TSV recording). A Mac diagnostic bundle can set `DMGameSlowFrameDiagnostics` to true in its Info.plist to enable dropped-frame attribution in its normal `run/log.txt`.
+
 For the prepared game work directory from the manual procedure above, package the host, rewritten modules, game files and completed shader cache into an app. A local `build/macos_build.json`, when present, supplies the game and version defaults:
 
 ```

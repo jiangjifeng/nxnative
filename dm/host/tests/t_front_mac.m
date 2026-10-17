@@ -31,7 +31,9 @@ int main(int argc, char **argv) {
     setenv("DM_WINDOW", "1", 1);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
         NSWindow *window = NSApp.keyWindow;
-        assert(window);
+        // A desktop that has not granted the test window focus may have no key
+        // window. Report the setup failure without producing a macOS crash report.
+        if (!window) { fprintf(stderr, "Mac front end %s: no active test window; run on a desktop with window focus\n", mode); _exit(77); }
         if (!strcmp(mode, "close")) [window performClose:nil];
         else if (!strcmp(mode, "menu")) [[NSApp.mainMenu itemAtIndex:0].submenu performActionForItemAtIndex:0];
         else if (!strcmp(mode, "dock")) [NSApp terminate:nil];

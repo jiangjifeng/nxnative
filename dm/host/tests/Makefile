@@ -108,8 +108,8 @@ run-mac: $(B)/t_gamepad_mac $(B)/t_front_mac
 	for mode in close menu cmdq cmdw dock; do $(B)/t_front_mac $$mode || exit 1; done
 $(B)/t_gamepad_mac: t_gamepad_mac.m ../gamepad_mac.m ../gamepad_mac.h ../dm_input.h | $(B)
 	clang -O1 -Wall -Werror -fobjc-arc -I.. $(GINC) -o $@ t_gamepad_mac.m -framework Foundation -framework GameController
-$(B)/t_front_mac: t_front_mac.m ../front_mac.m ../gamepad_mac.h | $(B)
-	clang -O1 -Wall -Wno-unused-function -fobjc-arc -I.. $(GINC) -o $@ t_front_mac.m -framework Cocoa -framework QuartzCore -framework Metal
+$(B)/t_front_mac: t_front_mac.m ../front_mac.m ../gamepad_mac.h ../../gfx/nvn/nvn_fps_hud.m ../../gfx/nvn/nvn_fps_hud.h ../../gfx/nvn/nvn_fps.h | $(B)
+	clang -O1 -Wall -Wno-unused-function -fobjc-arc -I.. $(GINC) -o $@ t_front_mac.m ../../gfx/nvn/nvn_fps_hud.m -framework Cocoa -framework QuartzCore -framework Metal
 
 $(B)/t_hid_receipt: t_hid_receipt.c t_touch_tick_stub.c ../hle_hid.c ../dm_cursor.c ../dm_hud.c ../dm_hud.h ../touch_mac.c ../../ios/Sources/dm_touch_controls.c ../hle.h ../dm.h ../dm_input.h ../front.h | $(B)
 	clang -O1 -Wno-unused-function -I.. -I../../ios/Sources -o $@ t_hid_receipt.c t_touch_tick_stub.c ../dm_cursor.c ../dm_hud.c ../touch_mac.c ../../ios/Sources/dm_touch_controls.c -lm

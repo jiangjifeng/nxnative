@@ -28,6 +28,9 @@ void dm_mac_app_setup(int *argc, char ***argv) {
         NSFileManager *fm = NSFileManager.defaultManager;
         NSString *title = [bundle objectForInfoDictionaryKey:@"DMGameTitleID"];
         if (!title.length) return;   // Plain command-line host: retain its arguments and environment
+        // Diagnostic bundles keep per-frame attribution in log.txt without a
+        // debugger or per-frame TSV. Regular bundles retain the default logging.
+        if ([[bundle objectForInfoDictionaryKey:@"DMGameSlowFrameDiagnostics"] boolValue] && !getenv("DM_SLOWFRAME")) setenv("DM_SLOWFRAME", "1", 1);
         NSString *marker = [bundle objectForInfoDictionaryKey:@"DMGameRomfsMarker"];
         NSString *support = [fm URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject.path;
         NSString *data = [[support stringByAppendingPathComponent:@"nxnative"] stringByAppendingPathComponent:title];

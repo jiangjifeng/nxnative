@@ -7,6 +7,7 @@
 #include "dm.h"
 #include "dm_input.h"
 #include "gamepad_mac.h"
+#include "../gfx/nvn/nvn_fps_hud.h"
 #include "dm_uiscreen.h"
 void mtl_set_ui_rect_fn(void (*fn)(double *y, double *h));
 static void ui_rect_frac(double *fy, double *fh) { int x, y, w, h, rw = 0, rh = 0; dm_ui_rect(&x, &y, &w, &h); if (dm_screen_real(&rw, &rh) && rh > 0) { *fy = (double)y / rh; *fh = (double)h / rh; } }   // Same as front_ios.m: vertical position and height of the UI rectangle (as fractions of the frame height)
@@ -117,6 +118,8 @@ void front_run(void (*guest)(void)) {
         g_layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
         g_layer.contentsScale = win.backingScaleFactor;
         v.layer = g_layer;
+        nvn_fps_hud_install((__bridge void *)g_layer, 0);
+        nvn_fps_hud_layout(0, 0, win.backingScaleFactor);
         [win center];
         [win makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];

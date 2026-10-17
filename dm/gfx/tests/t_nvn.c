@@ -6,6 +6,7 @@ uint64_t g_t0_ns;   // process start time from host main.c (used by hle_nvn's pe
 #include <time.h>
 void *front_metal_layer(void) { return NULL; }   // no window in unit tests: present only counts
 module_t *module_of(const void *p) { (void)p; return NULL; }   // no guest modules in unit tests
+int dm_guest_as_contains(uintptr_t p) { (void)p; return 0; }   // Unit-test API calls use host stacks; retain the production NVN entry path
 module_t g_mod[MAX_MOD]; int g_nmod;                            // host symbols that crash.c depends on
 void svc_thread_dump(void) {}
 void crash_install(void);

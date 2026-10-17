@@ -20,7 +20,10 @@
 enum { PG_NONE = 0, PG_PROT = 1, PG_BUSY = 2 };
 enum { BUSY_WAIT_MS = 2000 };
 // Tracked ranges = the memory pools (registered by MemoryPoolInitialize). After a pool is destroyed its live=0 slot is reused; the signal handler scans without locks.
-#define MAX_RANGE 4096   // was 256: with more memory pools than that the excess pools are untracked and their textures are treated as dirty and re-uploaded on every use (for Diablo's measured peak see "memory pools" in the memory readout line; Zelda has about 300 and hit this). The scan only covers slots in use, so a larger capacity costs nothing
+// BotW 1.8.2 on the M5 Max filled all 4096 slots after about 57 seconds; excess
+// pools then re-upload their textures on every use. Reserve room for those live
+// pools. Scans still stop at the high-water mark, not the reserved capacity.
+#define MAX_RANGE 16384
 // Ranges are rounded to host pages (16 KB) but guest memory pools are only 4 KB aligned: adjacent pools share their first / last pages, so one address can fall in several registered ranges.
 // So: "is this texture tracked" looks for a range that holds its whole span; a fault / host pre-write unprotects and stamps every range covering that page; pool destruction identifies its range by the pool's exact start mem.
 // (Previously the first range containing the address was always taken: two SMBW ASTC 6x5 textures whose pool's first page is shared with a small preceding pool were judged untracked and re-uploaded on every use, about 6 MB per frame)
@@ -35,6 +38,18 @@ static _Atomic int g_live, g_live_peak;   // number of registered pools and peak
 void nvn_dirty_stat(int *live, int *peak, int *cap) { *live = atomic_load(&g_live); *peak = atomic_load(&g_live_peak); *cap = MAX_RANGE; }
 static _Atomic int g_overflow_logged;
 static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER;   // Pool creation / destruction (guest threads, possibly concurrent) pick slots under a mutex; the page-fault handling path does not touch it
+static _Atomic uint64_t g_slot_epoch = 1;
+// tex_mtl asks whether a span is tracked, then whether it is dirty, repeatedly
+// across draws. Avoid rescanning thousands of pools for these stable spans.
+// Only ordinary lookups use this cache; signal handlers retain their full scan.
+// Any pool registration / removal invalidates positive and negative entries.
+#define SPAN_CACHE 1024
+static _Thread_local struct {
+    uintptr_t addr;
+    size_t len;
+    uint64_t epoch;
+    range_t *range;
+} g_span_cache[SPAN_CACHE];
 static _Atomic uint64_t g_mp_calls, g_mp_pages, g_mp_ticks;   // This module's mprotect: call count, pages covered, time spent (mach timebase, safe in the page-fault path too)
 static void mp(uintptr_t a, size_t len, int prot) {
     uint64_t t = mach_absolute_time(); mprotect((void *)a, len, prot);
@@ -59,9 +74,18 @@ static int busy_wait(range_t *r, uintptr_t p) {
 static int live_at(int i) { return atomic_load_explicit(&g_r[i].live, memory_order_acquire); }
 // The registered range that holds all of [a, a+len) (used for a texture's tracking / protection / dirty check)
 static range_t *find_span(uintptr_t a, size_t len) {
+    uint64_t epoch = atomic_load_explicit(&g_slot_epoch, memory_order_acquire);
+    uintptr_t page = a >> g_shift;
+    unsigned key = (unsigned)(page ^ (page >> 10)) & (SPAN_CACHE - 1);
+    __typeof__(g_span_cache[0]) *cached = &g_span_cache[key];
+    if (cached->epoch == epoch && cached->addr == a && cached->len == len &&
+        (!cached->range || (atomic_load_explicit(&cached->range->live, memory_order_acquire) &&
+                           a >= cached->range->base && a + len <= cached->range->end))) return cached->range;
     int n = atomic_load(&g_nr);
-    for (int i = 0; i < n; i++) if (live_at(i) && a >= g_r[i].base && a + len <= g_r[i].end) return &g_r[i];
-    return NULL;
+    range_t *found = NULL;
+    for (int i = 0; i < n; i++) if (live_at(i) && a >= g_r[i].base && a + len <= g_r[i].end) { found = &g_r[i]; break; }
+    *cached = (__typeof__(*cached)){a, len, epoch, found};
+    return found;
 }
 static void unprotect_page(range_t *r, uintptr_t p) {   // The caller has already changed the state from PROT to BUSY
     mp(r->base + (p << g_shift), g_pg, PROT_READ | PROT_WRITE);
@@ -130,6 +154,7 @@ void nvn_dirty_add_range(const void *mem, size_t size) {
     r->base = base; r->end = end; r->mem = (uintptr_t)mem; r->state = state; r->gen = gen;
     if (slot == n) atomic_store(&g_nr, n + 1);
     atomic_store_explicit(&r->live, 1, memory_order_release);
+    atomic_fetch_add_explicit(&g_slot_epoch, 1, memory_order_release);
     pthread_mutex_unlock(&g_slot_mu);
 }
 // Pool destruction: first restore still-protected pages to writable (the pool memory may be reused for something else once returned to the game), then mark invalid
@@ -137,7 +162,7 @@ void nvn_dirty_remove_range(const void *mem) {
     pthread_mutex_lock(&g_slot_mu);
     range_t *r = NULL; int n = atomic_load(&g_nr);
     for (int i = 0; i < n && !r; i++) if (live_at(i) && g_r[i].mem == (uintptr_t)mem) r = &g_r[i];   // Match by the pool's exact start: an adjacent pool sharing a page may have the same rounded base
-    if (r) { prep_write((void *)r->base, r->end - r->base); atomic_store_explicit(&r->live, 0, memory_order_release); atomic_fetch_sub(&g_live, 1); }
+    if (r) { prep_write((void *)r->base, r->end - r->base); atomic_store_explicit(&r->live, 0, memory_order_release); atomic_fetch_sub(&g_live, 1); atomic_fetch_add_explicit(&g_slot_epoch, 1, memory_order_release); }
     pthread_mutex_unlock(&g_slot_mu);
 }
 int nvn_dirty_tracked(const void *addr, size_t len) {

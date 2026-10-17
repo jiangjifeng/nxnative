@@ -152,6 +152,7 @@ Logging and capture:
 | Switch | Effect |
 |---|---|
 | `DM_NVN_LOG=1` | Logs the creation of NVN objects |
+| `DM_SHOW_FPS=0` | Hides the FPS overlay (shown by default on Mac and iOS); `1` enables it. It counts distinct actual drawable presentation times over the last second, updates twice a second, and shows average frame time as `1000 / FPS`. Discarded frames and refreshes with no new frame are excluded; a stall decays to zero. Presentation timing is unavailable in the iOS simulator |
 | `DM_NVN_FRAMES=N` | Prints the call table frame by frame for the first N frames (default 3) |
 | `DM_NVN_TSV=path` | Writes the per-frame call table and timings as TSV; adding `DM_NVN_TSV_CALLS=0` writes only the timing rows |
 | `DM_SLOWFRAME=1` | Writes the timing breakdown into the log only for the frames that dropped; the attribution script is `dm/ios/tools/slowframe.py` |

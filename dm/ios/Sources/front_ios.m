@@ -8,6 +8,7 @@
 #include "front.h"
 #include "hle.h"
 #include "dm.h"
+#include "../../gfx/nvn/nvn_fps_hud.h"
 
 UIView *dm_gamepad_view(CGRect frame);
 void dm_gamepad_reset(void);
@@ -57,6 +58,7 @@ static CAMetalLayer *g_layer;
     self.pad = dm_gamepad_view(self.view.bounds);
     self.pad.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.pad];
+    nvn_fps_hud_install((__bridge void *)self.view.layer, 1);
 }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
@@ -64,6 +66,8 @@ static CAMetalLayer *g_layer;
     CGFloat w = b.size.width, h = b.size.height;   // Fit 16:9 into the whole screen
     if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
     self.game.frame = CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
+    UIEdgeInsets safe = self.view.safeAreaInsets;
+    nvn_fps_hud_layout(MAX(safe.left, self.game.frame.origin.x), safe.top, self.view.window.screen.scale);
 }
 - (void)viewDidAppear:(BOOL)a { [super viewDidAppear:a]; front_ios_boot(); }
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
