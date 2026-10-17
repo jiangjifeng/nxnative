@@ -2351,7 +2351,7 @@ void mtl_prog_release(prog_t *p) { if (p->serial) serial_del(p->serial); }
 // At registration the whole texture object is snapshotted (NVN semantics: the descriptor has been written into the pool); view: the MTLTexture for that ID (a view or the base texture, held via CFBridgingRetain) and the serial-table / guest-write generations at the time it was obtained
 typedef struct { tex_t t; int ok; view_t v; int has_v; void *view; uint64_t view_id, view_rid, view_ser, view_dirty;
                  void *alt, *alt_of; uint64_t alt_rid; uint8_t alt_type;   // alt: compatible view used when the shader's declared type differs from view (tex_fit), alt_of = the view it was built from
-                 void *ar, *ar_of; uint64_t ar_rid; } treg_t;              // ar: the alpha-from-red view for the profile's alpha_from_red shaders (tex_alpha_red), ar_of = the view it was built from
+                 void *ar, *ar_of; uint64_t ar_rid; } treg_t;              // ar: a profile-specific capture view, ar_of = the view it was built from
 static treg_t *g_treg; static int g_ntreg;
 // Lock-free copy of texture ID → serial (the replay hot path only needs the serial: store lookahead index, binding set of the clear-only hoist): texture IDs are 20 bits, fixed 1M entries (BSS, only touched pages are used),
 // release write at registration, relaxed atomic read on the reader side, without entering g_rmu (the former h_ser locked and unlocked on every lookup, thousands of times per frame in the camp)
@@ -2484,19 +2484,26 @@ static id<MTLTexture> tex_fit(int tid, id<MTLTexture> t, MTLTextureType want, ui
     r->alt = (void *)CFBridgingRetain(v); r->alt_of = (__bridge void *)t; r->alt_type = (uint8_t)want; r->alt_rid = v.gpuResourceID._impl;
     *rid = r->alt_rid; return v;
 }
-// Alpha from red: the fragment shaders the game profile's alpha_from_red lists read a single-channel render target whose channel mapping is exactly (R, 0, 0, 1) as (R, 0, 0, R).
+// Layout captures: the fragment shaders the game profile's alpha_from_red lists
+// read single-channel render targets mapped (R, 0, 0, 1) as A8 (1, 1, 1, R),
+// and RG8 targets mapped (R, G, 0, 1) as LA8 (R, R, R, G).
 // Breath of the Wild's layout captures: a layout pane marked CaptureOn (user data "A8", "CaptureScale" 0.5, "MultiFilter"; about 140 layouts) is drawn into an RGBA8 target, blurred at half size,
 // and its alpha copied into the red channel of an R8 texture the game builds with mapping (R, 0, 0, 1); the layout's panes then sample it in place of the FBLayout_00 placeholder.
 // Each HUD prompt bar (PaGuideKey*) draws, per key, a cream glow P_Glow_00 (aa209f57b133e862: colour from the Kumo64 cloud texture, alpha = min(cloud alpha, capture alpha), animated in
 // when the bar appears), then a black shadow P_Sh_00 (e6a88e12dbae9743: alpha = capture alpha), then the text. Read literally, the capture's alpha is always 1: the shadow is a hard-edged box
 // and the glow fills the whole rectangle with cloud (both seen on the iPhone); in Switch footage both follow the text. On the Mac (shrine, bar fade-in) the full list leaves only a glow around the words.
-// Only render targets qualify (captures always are; asset and CPU-written textures are not), so the list can name every layout shader variant. DM_NVN_ALPHA_RED=0 turns it off, <keys,...> replaces the list. Caller holds g_rmu
+// A8 needs white RGB as well as alpha from red: the stamina panes tint the mask
+// green, so (R, 0, 0, R) makes their RGB black. GameOver_00 declares LA8 captures;
+// reading their alpha as 1 draws red rectangles around the letters. Only render
+// targets qualify (asset and CPU-written textures do not), and explicit swizzles
+// are preserved. DM_NVN_ALPHA_RED=0 disables this; <keys,...> replaces the list.
+// Caller holds g_rmu.
 static char g_afr_keys[48][20]; static int g_afr_nk = -1;
 static int afr_want(NvShader *sh) {
     if (!sh->afr) {
         if (g_afr_nk < 0) { g_afr_nk = 0; const char *e = getenv("DM_NVN_ALPHA_RED"), *src = e && *e ? e : DM_GAME_ALPHA_FROM_RED;
             if (strcmp(src, "0")) for (const char *q = src; *q && g_afr_nk < 48;) { size_t n = strcspn(q, ", "); if (n) { if (n > 16) n = 16; memcpy(g_afr_keys[g_afr_nk], q, n); g_afr_keys[g_afr_nk++][n] = 0; } q += n; q += strspn(q, ", "); }
-            if (g_afr_nk) MLOG("单通道贴图 alpha 取红：%s%s", src, e && *e ? "（DM_NVN_ALPHA_RED）" : "（游戏档案 alpha_from_red）"); }
+            if (g_afr_nk) MLOG("布局捕获 A8 / LA8 通道映射：%s%s", src, e && *e ? "（DM_NVN_ALPHA_RED）" : "（游戏档案 alpha_from_red）"); }
         sh->afr = 1; for (int i = 0; i < g_afr_nk; i++) if (!strncmp(sh->key, g_afr_keys[i], strlen(g_afr_keys[i]))) sh->afr = 2;
     }
     return sh->afr == 2;
@@ -2513,16 +2520,20 @@ static id<MTLTexture> tex_alpha_view(int tid, id<MTLTexture> t, MTLTextureSwizzl
     NSUInteger ns = t.textureType == MTLTextureType3D ? 1 : t.arrayLength * (t.textureType == MTLTextureTypeCube || t.textureType == MTLTextureTypeCubeArray ? 6 : 1);
     id<MTLTexture> v = [base newTextureViewWithPixelFormat:pf textureType:t.textureType levels:NSMakeRange(l0, t.mipmapLevelCount) slices:NSMakeRange(s0, ns)
                                                    swizzle:sw];
-    if (!v) { RED_ONCE(82, "alpha 取红的视图建不出（贴图号 %d 格式 %lu）", tid, (unsigned long)pf); return nil; }
+    if (!v) { RED_ONCE(82, "捕获通道映射视图建不出（贴图号 %d 格式 %lu）", tid, (unsigned long)pf); return nil; }
     r->ar = (void *)CFBridgingRetain(v); r->ar_of = (__bridge void *)t; r->ar_rid = v.gpuResourceID._impl;
     *rid = r->ar_rid; return v;
 }
-static id<MTLTexture> tex_alpha_red(int tid, id<MTLTexture> t, uint64_t *rid) {
+static id<MTLTexture> tex_layout_capture(int tid, id<MTLTexture> t, uint64_t *rid) {
     MTLPixelFormat pf = t.pixelFormat; MTLTextureSwizzleChannels sw = t.swizzle;
-    if (pf != MTLPixelFormatR8Unorm && pf != MTLPixelFormatR16Unorm && pf != MTLPixelFormatR16Float && pf != MTLPixelFormatR32Float) return nil;
-    if (sw.red != MTLTextureSwizzleRed || sw.green != MTLTextureSwizzleZero || sw.blue != MTLTextureSwizzleZero || sw.alpha != MTLTextureSwizzleOne) return nil;
-    id<MTLTexture> v = tex_alpha_view(tid, t, MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed, MTLTextureSwizzleZero, MTLTextureSwizzleZero, MTLTextureSwizzleRed), rid);
-    if (v) { static int once; if (!once++) MLOG("单通道贴图 alpha 取红：首例 贴图号 %d %lux%lu", tid, (unsigned long)t.width, (unsigned long)t.height); }
+    if (sw.red != MTLTextureSwizzleRed || sw.blue != MTLTextureSwizzleZero || sw.alpha != MTLTextureSwizzleOne) return nil;
+    if (pf == MTLPixelFormatRG8Unorm && sw.green == MTLTextureSwizzleGreen)
+        sw = MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed, MTLTextureSwizzleRed, MTLTextureSwizzleRed, MTLTextureSwizzleGreen);
+    else if ((pf == MTLPixelFormatR8Unorm || pf == MTLPixelFormatR16Unorm || pf == MTLPixelFormatR16Float || pf == MTLPixelFormatR32Float) && sw.green == MTLTextureSwizzleZero)
+        sw = MTLTextureSwizzleChannelsMake(MTLTextureSwizzleOne, MTLTextureSwizzleOne, MTLTextureSwizzleOne, MTLTextureSwizzleRed);
+    else return nil;
+    id<MTLTexture> v = tex_alpha_view(tid, t, sw, rid);
+    if (v) { static int once; if (!once++) MLOG("布局捕获通道映射：首例 贴图号 %d %lux%lu 格式 %lu", tid, (unsigned long)t.width, (unsigned long)t.height, (unsigned long)pf); }
     return v;
 }
 // The quick-equipment background is an opaque scene capture. BotW first copies
@@ -3150,7 +3161,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             if (t && t.textureType != (MTLTextureType)b->dtt) { uint64_t r2 = 0; id<MTLTexture> v = tex_fit(tid, t, (MTLTextureType)b->dtt, &r2); if (v) { t = v; trid = r2; } }
             if (t && nvn_stage == 1) {
                 uint64_t r2 = 0; id<MTLTexture> v = tex_opaque_scene(sh, tid, t, &r2);
-                if (!v && afr_want(sh)) v = tex_alpha_red(tid, t, &r2);
+                if (!v && afr_want(sh)) v = tex_layout_capture(tid, t, &r2);
                 if (v) { t = v; trid = r2; }
             }
             if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 7][b->dpf & 3]; }

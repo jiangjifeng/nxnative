@@ -36,16 +36,19 @@ static int sample(id<MTLTexture> input, float out[4]) {
 
 int main(void) { @autoreleasepool {
     setenv("DM_NVN_OPAQUE_SCENE", "0123456789abcdef 1234567890abcdef", 1);
-    g_dev = MTLCreateSystemDefaultDevice(); g_ntreg = 3; g_treg = calloc(g_ntreg, sizeof *g_treg);
+    setenv("DM_NVN_ALPHA_RED", "0123456789abcdef", 1);
+    g_dev = MTLCreateSystemDefaultDevice(); g_ntreg = 5; g_treg = calloc(g_ntreg, sizeof *g_treg);
     MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGB10A2Unorm width:4 height:2 mipmapped:NO];
     d.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget; d.storageMode = MTLStorageModeShared;
     id<MTLTexture> scene = [g_dev newTextureWithDescriptor:d]; uint32_t pixels[8];
     for (int i = 0; i < 8; i++) pixels[i] = 256u | (512u << 10) | (768u << 20); // Complete RGB, alpha 0.
     [scene replaceRegion:MTLRegionMake2D(0,0,4,2) mipmapLevel:0 withBytes:pixels bytesPerRow:16];
     NvShader *sh = [NvShader new]; strcpy(sh->key, "0123456789abcdef_b");
+    NvShader *unlisted = [NvShader new]; strcpy(unlisted->key, "fedcba9876543210_b");
+    int failed = !afr_want(sh) || afr_want(unlisted);
     uint64_t rid = 0; id<MTLTexture> view = tex_opaque_scene(sh, 1, scene, &rid);
     if (!view || !rid || tex_opaque_scene(sh, 1, scene, &rid) != view) return 1;
-    float out[4]; int failed = sample(view, out);
+    float out[4]; failed += sample(view, out);
     failed += fabsf(out[0]-256.f/1023.f)>0.0001f || fabsf(out[1]-512.f/1023.f)>0.0001f || fabsf(out[2]-768.f/1023.f)>0.0001f || out[3]!=1;
     failed += sample(scene, out) || out[3]!=0; // The capture's stored alpha is unchanged.
     strcpy(sh->key, "fedcba9876543210_b"); failed += tex_opaque_scene(sh, 1, scene, &rid) != nil;
@@ -65,9 +68,35 @@ int main(void) { @autoreleasepool {
     [mask replaceRegion:MTLRegionMake2D(0,0,4,2) mipmapLevel:0 withBytes:reds bytesPerRow:4];
     id<MTLTexture> mapped = [mask newTextureViewWithPixelFormat:mask.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(0,1) slices:NSMakeRange(0,1)
                                                    swizzle:MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed,MTLTextureSwizzleZero,MTLTextureSwizzleZero,MTLTextureSwizzleOne)];
-    id<MTLTexture> red = tex_alpha_red(2, mapped, &rid);
-    if (!red) return 1;
-    failed += sample(red, out) || fabsf(out[3]-64.f/255.f)>0.0001f;
+    id<MTLTexture> a8 = tex_layout_capture(2, mapped, &rid);
+    if (!a8 || !rid || tex_layout_capture(2, mapped, &rid) != a8) return 1;
+    // Stamina's material tints an A8 mask green: RGB must be white, not R00.
+    failed += sample(a8, out) || out[0]!=1 || out[1]!=1 || out[2]!=1 || fabsf(out[3]-64.f/255.f)>0.0001f;
+    memset(reds, 0, sizeof reds);
+    [mask replaceRegion:MTLRegionMake2D(0,0,4,2) mipmapLevel:0 withBytes:reds bytesPerRow:4];
+    failed += sample(a8, out) || out[0]!=1 || out[1]!=1 || out[2]!=1 || out[3]!=0;
+    d.pixelFormat = MTLPixelFormatRG8Unorm;
+    id<MTLTexture> la = [g_dev newTextureWithDescriptor:d]; uint8_t pairs[16];
+    for (int i = 0; i < 8; i++) { pairs[i*2] = 180; pairs[i*2+1] = 64; }
+    [la replaceRegion:MTLRegionMake2D(0,0,4,2) mipmapLevel:0 withBytes:pairs bytesPerRow:8];
+    id<MTLTexture> rg = [la newTextureViewWithPixelFormat:la.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(0,1) slices:NSMakeRange(0,1)
+                                               swizzle:MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed,MTLTextureSwizzleGreen,MTLTextureSwizzleZero,MTLTextureSwizzleOne)];
+    id<MTLTexture> la8 = tex_layout_capture(3, rg, &rid);
+    if (!la8 || !rid || tex_layout_capture(3, rg, &rid) != la8) return 1;
+    // Game Over's LA8 capture stores luminance and opacity separately.
+    failed += sample(la8, out) || fabsf(out[0]-180.f/255.f)>0.0001f || out[1]!=out[0] || out[2]!=out[0] || fabsf(out[3]-64.f/255.f)>0.0001f;
+    failed += sample(rg, out) || fabsf(out[0]-180.f/255.f)>0.0001f || fabsf(out[1]-64.f/255.f)>0.0001f || out[2]!=0 || out[3]!=1;
+    failed += tex_layout_capture(3, la8, &rid) != nil; // Explicit mappings are preserved.
+    d.usage = MTLTextureUsageShaderRead;
+    id<MTLTexture> rg_asset = [g_dev newTextureWithDescriptor:d];
+    rg = [rg_asset newTextureViewWithPixelFormat:rg_asset.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(0,1) slices:NSMakeRange(0,1)
+                                         swizzle:MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed,MTLTextureSwizzleGreen,MTLTextureSwizzleZero,MTLTextureSwizzleOne)];
+    failed += tex_layout_capture(4, rg, &rid) != nil; // Packaged/CPU assets never qualify.
+    d.pixelFormat = MTLPixelFormatR8Unorm; id<MTLTexture> r_asset = [g_dev newTextureWithDescriptor:d];
+    mapped = [r_asset newTextureViewWithPixelFormat:r_asset.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(0,1) slices:NSMakeRange(0,1)
+                                           swizzle:MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed,MTLTextureSwizzleZero,MTLTextureSwizzleZero,MTLTextureSwizzleOne)];
+    failed += tex_layout_capture(4, mapped, &rid) != nil;
+    failed += tex_layout_capture(4, rgba, &rid) != nil;
     printf("layout capture alpha GPU checks: failed=%d\n", failed);
     return failed != 0;
 } }

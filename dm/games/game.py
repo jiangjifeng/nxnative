@@ -97,7 +97,7 @@ def header(g):
     if pl not in ('simple', 'full'): sys.exit(f'{g.id}: pad_layout 只能是 simple / full | pad_layout must be simple or full: {pl}')
     fbs = g.words('feedback_snap', '')   # fragment shader key prefixes whose same-pass feedback sampling gets a snapshot first (nvn_mtl.m fb_prepare); none by default
     if any(not re.fullmatch(r'[0-9a-f]{8,16}', k) for k in fbs): sys.exit(f'{g.id}: feedback_snap 要写片元着色器键（8–16 位小写十六进制）| feedback_snap takes fragment shader keys (8-16 lowercase hex digits): {fbs}')
-    afr = g.words('alpha_from_red', '')   # fragment shader key prefixes that read single-channel textures mapped (R, 0, 0, 1) with alpha = red (nvn_mtl.m tex_alpha_red); none by default
+    afr = g.words('alpha_from_red', '')   # layout fragment shader keys that read R/RG render targets as A8/LA8 (nvn_mtl.m tex_layout_capture); none by default
     if any(not re.fullmatch(r'[0-9a-f]{8,16}', k) for k in afr): sys.exit(f'{g.id}: alpha_from_red 要写片元着色器键（8–16 位小写十六进制）| alpha_from_red takes fragment shader keys (8-16 lowercase hex digits): {afr}')
     osc = g.words('opaque_scene_capture', '')
     if len(osc) > 8 or any(not re.fullmatch(r'[0-9a-f]{8,16}', k) for k in osc):
